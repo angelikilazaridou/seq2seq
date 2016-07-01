@@ -1,0 +1,1 @@
+python preprocess.py  --srcfile /home/rcf-40/al_227/nlg-05/DATA/tasks/task2/roc/train_S_c_1.txt --targetfile /home/rcf-40/al_227/nlg-05/DATA/tasks/task2/roc/train_T_c_1.txt --srcvalfile ~/nlg-05/DATA/tasks/task2/roc/val_S_c_1.txt --targetvalfile ~/nlg-05/DATA/tasks/task2/roc/val_T_c_1.txt --outputfile data/roc-c1 
