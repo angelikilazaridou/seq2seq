@@ -32,6 +32,7 @@ cmd:text("")
 
 cmd:option('-num_layers', 2, [[Number of layers in the LSTM encoder/decoder]])
 cmd:option('-rnn_size', 500, [[Size of LSTM hidden states]])
+cmd:option('-z_size',200, [[Size of latent vector]])
 cmd:option('-word_vec_size', 500, [[Word embedding sizes]])
 cmd:option('-attn', 1, [[If = 1, use attention on the decoder side. If = 0, it uses the last
                        hidden state of the decoder as context at each time step.]])
@@ -201,8 +202,7 @@ function train(train_data, valid_data)
    
    -- clone encoder/decoder up to max source/max(target, source) length   
    decoder_clones = clone_many_times(decoder, opt.max_sent_l_targ)
-   local max_sent_l = torch.max(opt.max_sent_l_src, opt.max_sent_l_targ)
-   encoder_clones = clone_many_times(encoder, max_sent_l)
+   encoder_clones = clone_many_times(encoder, opt.max_sent_l)
 
    -- tie weights in different 
    for i = 1, max_sent_l do
@@ -332,20 +332,45 @@ function train(train_data, valid_data)
          local target, target_out, nonzeros, source = d[1], d[2], d[3], d[4]
 	 local batch_l, target_l, source_l = d[5], d[6], d[7]
 	 
-	 local encoder_grads = encoder_grad_proto[{{1, batch_l}, {1, source_l}}]
+	 local encoder_grads_source = encoder_grad_proto[{{1, batch_l}, {1, source_l}}]
+	 local encoder_grads_target = encoder_grad_proto[{{1, batch_l}, {1, target_l}}]
+	 
+	 -- TODO: we will need here different state encoder for different inputs
 	 local rnn_state_enc = reset_state(init_fwd_enc, batch_l, 0)
-	 local context = context_proto[{{1, batch_l}, {1, source_l}}]
+	 
+	 local context_source = context_proto[{{1, batch_l}, {1, source_l}}]
+	 local context_target = context_proto[{{1, batch_l}, {1, target_l}}]
+
 	 if opt.gpuid >= 0 then
 	    cutorch.setDevice(opt.gpuid)
 	 end	 
-	 -- forward prop encoder
+	 -- forward prop encoder source
 	 for t = 1, source_l do
 	    encoder_clones[t]:training()
-	    local encoder_input = {source[t], table.unpack(rnn_state_enc[t-1])}
+	    local encoder_input = {source[t], table.unpack(rnn_state_enc_source[t-1])}
 	    local out = encoder_clones[t]:forward(encoder_input)
-	    rnn_state_enc[t] = out
-	    context[{{},t}]:copy(out[#out])
+	    rnn_state_enc_source[t] = out
+	    context_source[{{},t}]:copy(out[#out])
 	 end
+
+	 -- forward prop encoder target
+	 for t = 1, source_l do
+	    encoder_clones[t]:training()
+	    local encoder_input = {target[t], table.unpack(rnn_state_enc_target[t-1])}
+	    local out = encoder_clones[t]:forward(encoder_input)
+	    rnn_state_enc_target[t] = out
+	    context_target[{{},t}]:copy(out[#out])
+	 end
+	 
+
+         -- use x and y to predict m and s from recognition model
+	 local stats_phi = recognition_model:forward({context_source[{{},source_l}, context_target[{{},target_l}]]})
+	 local mu_phi = stats_phi[1]
+	 local s_phi = stats_phi[2]
+
+	 -- calculate z
+	 local z = 
+	 
 	 -- forward prop decoder
 	 local rnn_state_dec = reset_state(init_fwd_dec, batch_l, 0)
 	 if opt.init_dec == 1 then
@@ -368,6 +393,7 @@ function train(train_data, valid_data)
 	 for t = 1, target_l do
 	    decoder_clones[t]:training()
 	    local decoder_input
+	    -- this should be the z instead of context
 	    decoder_input = {target[t], context[{{}, source_l}], table.unpack(rnn_state_dec[t-1])}
 	    local out = decoder_clones[t]:forward(decoder_input)
 	    local next_state = {}
@@ -667,8 +693,10 @@ function main()
       encoder = make_lstm(valid_data, opt, 'enc', opt.use_chars_enc)
       -- AL: DECODER
       decoder = make_lstm(valid_data, opt, 'dec', opt.use_chars_dec)
-      -- AL: WHAT??
+      -- AL: word generator
       generator, criterion = make_generator(valid_data, opt)
+      -- AL: recognition model
+      recognition_model = recognition_model(opt.rnn_size, opt.rnn_size, opt.z_size) 
    else -- DON'T CARE
       assert(path.exists(opt.train_from), 'checkpoint path invalid')
       print('loading ' .. opt.train_from .. '...')
@@ -685,7 +713,7 @@ function main()
       _, criterion = make_generator(valid_data, opt)
    end   
    
-   layers = {encoder, decoder, generator}
+   layers = {encoder, decoder, generator, recognition_model}
 
    -- AL: Adagrad stuff
    if opt.adagrad == 1 then

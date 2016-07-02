@@ -21,6 +21,32 @@ function compute_z()
     return nn.gModule(inputs, outputs)
 end
 
+function recognition_model(x_size, y_size, z_size)
+ 
+    local inputs = {}
+    table.insert(inputs, nn.Identity()()) -- x
+    table.insert(inputs, nn.Identity()()) -- y
+
+
+    local x = nn.JoinTable(2)({inputs[1], inputs[2]})
+    local d = nn.Linear(d_size*2, y_size+x_size)(x)
+
+    -- break batch_size x 1 x d_size*2 into batch_size x 2 x d_size
+    d =  nn.View(-1, z_size):setNumInputDims(2)(d)
+    -- get mean and variance
+    m = nn.Select(2,1)(d)
+    s = nn.Select(2,2)(d)
+
+    local outputs = {}
+    table.insert(outputs, m)
+    table.insert(outputs, s)
+
+    return nn.gModule(inputs, outputs)
+
+
+
+end
+
 function make_lstm(data, opt, model, use_chars)
    assert(model == 'enc' or model == 'dec')
    local name = '_' .. model
