@@ -1,11 +1,13 @@
 require 'nngraph'
-oequire 'nn'
+require 'nn'
 require 'hdf5'
 
 require 'data.lua'
 require 'util.lua'
 require 'mymodels.lua'
 require 'model_utils.lua'
+require 'KLDCriterion.lua'
+require 'latent_variable_sampler.lua'
 
 cmd = torch.CmdLine()
 
@@ -46,7 +48,7 @@ cmd:option('-reverse_src', 0, [[If = 1, reverse the source sequence. The origina
                               sequence-to-sequence paper found that this was crucial to 
                               achieving good performance, but with attention models this
                               does not seem necessary. Recommend leaving it to 0]])
-cmd:option('-init_dec', 1, [[Initialize the hidden/cell state of the decoder at time 
+cmd:option('-init_dec', 0, [[Initialize the hidden/cell state of the decoder at time 
                            0 to be the last hidden/cell state of the encoder. If 0, 
                            the initial states of the decoder are set to zero vectors]])
 cmd:option('-input_feed', 1, [[If = 1, feed the context vector at each time step as additional
@@ -151,13 +153,8 @@ function train(train_data, valid_data)
    opt.val_perf = {}
    
    for i = 1, #layers do
-      if opt.gpuid2 >= 0 then
-	 if i == 1 then
-	    cutorch.setDevice(opt.gpuid)
-	 else
-	    cutorch.setDevice(opt.gpuid2)
-	 end
-      end      
+     
+      print(i)
       local p, gp = layers[i]:getParameters()
       if opt.train_from:len() == 0 then
 	 p:uniform(-opt.param_init, opt.param_init)
@@ -205,7 +202,7 @@ function train(train_data, valid_data)
    encoder_clones = clone_many_times(encoder, opt.max_sent_l)
 
    -- tie weights in different 
-   for i = 1, max_sent_l do
+   for i = 1, opt.max_sent_l do
       if encoder_clones[i].apply then
 	 encoder_clones[i]:apply(function(m) m:setReuse() end)
       end
@@ -220,16 +217,8 @@ function train(train_data, valid_data)
    if opt.gpuid >= 0 then
       h_init = h_init:cuda()      
       cutorch.setDevice(opt.gpuid)
-      if opt.gpuid2 >= 0 then
-	 cutorch.setDevice(opt.gpuid)
-	 encoder_grad_proto2 = encoder_grad_proto2:cuda()
-	 context_proto = context_proto:cuda()	 
-	 cutorch.setDevice(opt.gpuid2)
-	 encoder_grad_proto = encoder_grad_proto:cuda()
-	 context_proto2 = context_proto2:cuda()	 
-      else
-	 context_proto = context_proto:cuda()
-	 encoder_grad_proto = encoder_grad_proto:cuda()
+      context_proto = context_proto:cuda()
+       encoder_grad_proto = encoder_grad_proto:cuda()
       end
    end
 
@@ -332,14 +321,16 @@ function train(train_data, valid_data)
          local target, target_out, nonzeros, source = d[1], d[2], d[3], d[4]
 	 local batch_l, target_l, source_l = d[5], d[6], d[7]
 	 
-	 local encoder_grads_source = encoder_grad_proto[{{1, batch_l}, {1, source_l}}]
-	 local encoder_grads_target = encoder_grad_proto[{{1, batch_l}, {1, target_l}}]
+	 local encoder_grads_source = encoder_grad_proto[{{1, batch_l}, {1, source_l}}]:copy()
+	 local encoder_grads_target = encoder_grad_proto[{{1, batch_l}, {1, target_l}}]:copy()
+
+	 local recognition_grads = torch.zeros(opt.max_batch_l, opt.z_size) 
 	 
-	 -- TODO: we will need here different state encoder for different inputs
-	 local rnn_state_enc = reset_state(init_fwd_enc, batch_l, 0)
+	 local rnn_state_enc_source = reset_state(init_fwd_enc, batch_l, 0)
+	 local rnn_state_enc_target = reset_state(init_fwd_enc, batch_l, 0)
 	 
-	 local context_source = context_proto[{{1, batch_l}, {1, source_l}}]
-	 local context_target = context_proto[{{1, batch_l}, {1, target_l}}]
+	 local context_source = context_proto[{{1, batch_l}, {1, source_l}}]:copy()
+	 local context_target = context_proto[{{1, batch_l}, {1, target_l}}]:copy()
 
 	 if opt.gpuid >= 0 then
 	    cutorch.setDevice(opt.gpuid)
@@ -363,30 +354,29 @@ function train(train_data, valid_data)
 	 end
 	 
 
-         -- use x and y to predict m and s from recognition model
-	 local stats_phi = recognition_model:forward({context_source[{{},source_l}, context_target[{{},target_l}]]})
+         -- use x and y to predict m and sigma from recognition model
+	 local stats_phi = recognition_model:forward({context_source[{{},source_l}], context_target[{{},target_l}]})
 	 local mu_phi = stats_phi[1]
-	 local s_phi = stats_phi[2]
+	 local logsigma_phi = stats_phi[2]
 
 	 -- calculate z
-	 local z = 
+	 local z = sampler:forward({mu_phi, logsigma_phi}) 
+	 
+	 -- use x to predict m and s from prior model
+	 local stats_omega = prior_model:forward({context_source[{{},source_l}]})
+	 local mu_omega = stats_omega[1]
+	 local logsigma_omega = stats_omega[2]
 	 
 	 -- forward prop decoder
 	 local rnn_state_dec = reset_state(init_fwd_dec, batch_l, 0)
+	 -- TODO: not sure how to deal with this
 	 if opt.init_dec == 1 then
 	    for L = 1, opt.num_layers do
-	       rnn_state_dec[0][L*2-1+opt.input_feed]:copy(rnn_state_enc[source_l][L*2-1])
-	       rnn_state_dec[0][L*2+opt.input_feed]:copy(rnn_state_enc[source_l][L*2])
+	       rnn_state_dec[0][L*2-1+opt.input_feed]:copy(rnn_state_enc_source[source_l][L*2-1])
+	       rnn_state_dec[0][L*2+opt.input_feed]:copy(rnn_state_enc_source[source_l][L*2])
 	    end
 	 end	 
 
-	 
-	 if opt.gpuid >= 0 and opt.gpuid2 >= 0 then
-	    cutorch.setDevice(opt.gpuid2)	    
-	    local context2 = context_proto2[{{1, batch_l}, {1, source_l}}]
-	    context2:copy(context)
-	    context = context2
-	 end	 
 	 
 	 local preds = {}
 	 local decoder_input
@@ -394,7 +384,7 @@ function train(train_data, valid_data)
 	    decoder_clones[t]:training()
 	    local decoder_input
 	    -- this should be the z instead of context
-	    decoder_input = {target[t], context[{{}, source_l}], table.unpack(rnn_state_dec[t-1])}
+	    decoder_input = {target[t], z, table.unpack(rnn_state_dec[t-1])}
 	    local out = decoder_clones[t]:forward(decoder_input)
 	    local next_state = {}
 	    table.insert(preds, out[#out])
@@ -408,22 +398,32 @@ function train(train_data, valid_data)
 	 end
 	 
 	 -- backward prop decoder
-	 encoder_grads:zero()
+	 encoder_grads_source:zero()
+	 encoder_grads_target:zero()
+
+	 recognition_grads:zero()
 	 
 	 local drnn_state_dec = reset_state(init_bwd_dec, batch_l)
-	 local loss = 0
+	 local lossMLE = 0
+	 --KLDloss
+	 local kldloss = KLDloss:forward(mu_phi, logsigma_phi, mu_omega, logsigma_omega)/batch_l
+	 --backward through kldloss
+	 local dmu_phi, dlogsigma_phi, dmu_omega, dlogsigma_omega = table.unpack(KLDloss:backward(mu_phi, logsigma_phi, mu_omega, logsigma_omega))
+
+
 	 for t = target_l, 1, -1 do
 	    local pred = generator:forward(preds[t])
-	    loss = loss + criterion:forward(pred, target_out[t])/batch_l
+	    lossMLE = lossMLE + criterion:forward(pred, target_out[t])/batch_l
 	    local dl_dpred = criterion:backward(pred, target_out[t])
 	    dl_dpred:div(batch_l)
 	    local dl_dtarget = generator:backward(preds[t], dl_dpred)
 	    drnn_state_dec[#drnn_state_dec]:add(dl_dtarget)
 	    local decoder_input
-	    decoder_input = {target[t], context[{{}, source_l}], table.unpack(rnn_state_dec[t-1])}
+	    decoder_input = {target[t], z, table.unpack(rnn_state_dec[t-1])}
 	    local dlst = decoder_clones[t]:backward(decoder_input, drnn_state_dec)
 	    -- accumulate encoder/decoder grads
-	    encoder_grads[{{}, source_l}]:add(dlst[2])
+	    -- AL: why is this happening???
+	    recognition_grads:add(dlst[2])
 	    drnn_state_dec[#drnn_state_dec]:zero()
 	    if opt.input_feed == 1 then
 	       drnn_state_dec[#drnn_state_dec]:add(dlst[3])
@@ -432,6 +432,10 @@ function train(train_data, valid_data)
 	       drnn_state_dec[j-dec_offset+1]:copy(dlst[j])
 	    end	    
 	 end
+	
+	 --total loss
+	 local loss = lossMLE/target_l + kldloss
+
          word_vec_layers[2].gradWeight[1]:zero()
 	 if opt.fix_word_vecs_dec == 1 then
 	    word_vec_layers[2].gradWeight:zero()
@@ -440,35 +444,62 @@ function train(train_data, valid_data)
 	 local grad_norm = 0
 	 grad_norm = grad_norm + grad_params[2]:norm()^2 + grad_params[3]:norm()^2
 
-	 -- backward prop encoder
-	 if opt.gpuid >= 0 and opt.gpuid2 >= 0 then
-	    cutorch.setDevice(opt.gpuid)
-	    local encoder_grads2 = encoder_grad_proto2[{{1, batch_l}, {1, source_l}}]
-	    encoder_grads2:zero()
-	    encoder_grads2:copy(encoder_grads)
-	    encoder_grads = encoder_grads2 -- batch_l x source_l x rnn_size
-	 end
 
-	 local drnn_state_enc = reset_state(init_bwd_enc, batch_l)
+         -- backward prop through z
+	 local dz = recognition_model:backward({context_source[{{},source_l}], context_target[{{},target_l}]}, recognition_grads)
+	 local dstats = sampler:backward({mu_phi, logsigma_phi}, dz)
+
+
+	 -- add in dstats the ds based on the kldloss
+	 dstats[1]:add(dmu_phi)
+	 dstats[2]:add(dlogsigma_phi)
+
+
+	 -- backward prop through recognition model
+	 local dencoders =  recognition_model:backward({context_source[{{},source_l}], context_target[{{},target_l}]}, dstats)
+
+	 -- backward prop encoders
+	 local drnn_state_enc_source = reset_state(init_bwd_enc, batch_l)
+	 local drnn_state_enc_target = reset_state(init_bwd_enc, batch_l)
+
+	 -- TODO: not sure how to deal with this again
 	 if opt.init_dec == 1 then
 	    for L = 1, opt.num_layers do
 	       drnn_state_enc[L*2-1]:copy(drnn_state_dec[L*2-1])
 	       drnn_state_enc[L*2]:copy(drnn_state_dec[L*2])
 	    end	    
 	 end
+	
+         encoder_grads_source[{{}, source_l}]:add(dencoders[1])
+	 encoder_grads_target[{{}, target_l}]:add(dencoders[2])
+         
 	 
+	 -- backward prop encoder source
 	 for t = source_l, 1, -1 do
-	    local encoder_input = {source[t], table.unpack(rnn_state_enc[t-1])}
+	    local encoder_input = {source[t], table.unpack(rnn_state_enc_source[t-1])}
 	    if t == source_l then
-	       drnn_state_enc[#drnn_state_enc]:add(encoder_grads[{{},t}])
+	       drnn_state_enc_source[#drnn_state_enc_source]:add(encoder_grads_source[{{},t}])
 	    end
-	    local dlst = encoder_clones[t]:backward(encoder_input, drnn_state_enc)
-	    for j = 1, #drnn_state_enc do
-	       drnn_state_enc[j]:copy(dlst[j+1])
+	    local dlst = encoder_clones[t]:backward(encoder_input, drnn_state_enc_source)
+	    for j = 1, #drnn_state_enc_source do
+	       drnn_state_enc_source[j]:copy(dlst[j+1])
 	    end	    
 	 end
 
 	    	 
+	 -- backward prop encoder target
+         for t = target_l, 1, -1 do
+	    local encoder_input = {source[t], table.unpack(rnn_state_enc_target[t-1])}
+	    if t == target_l then
+	       drnn_state_enc_target[#drnn_state_enc]:add(encoder_grads_target[{{},t}])
+	    end
+	    local dlst = encoder_clones[t]:backward(encoder_input, drnn_state_enc_target)
+	    for j = 1, #drnn_state_enc_target do
+	       drnn_state_enc_target[j]:copy(dlst[j+1])
+	    end
+	 end
+
+
          word_vec_layers[1].gradWeight[1]:zero()
 	 if opt.fix_word_vecs_enc == 1 then
 	    word_vec_layers[1].gradWeight:zero()
@@ -481,13 +512,6 @@ function train(train_data, valid_data)
 	 local param_norm = 0
 	 local shrinkage = opt.max_grad_norm / grad_norm
 	 for j = 1, #grad_params do
-	    if opt.gpuid >= 0 and opt.gpuid2 >= 0 then
-	       if j == 1 then
-		  cutorch.setDevice(opt.gpuid)
-	       else
-		  cutorch.setDevice(opt.gpuid2)
-	       end
-	    end
 	    if shrinkage < 1 then
 	       grad_params[j]:mul(shrinkage)
 	    end
@@ -697,6 +721,12 @@ function main()
       generator, criterion = make_generator(valid_data, opt)
       -- AL: recognition model
       recognition_model = recognition_model(opt.rnn_size, opt.rnn_size, opt.z_size) 
+      -- AL: prior model
+      prior_model = prior_model(opt.rnn_size, opt.z_size)
+      -- AL: KDloss
+      KLDloss = nn.KLDCriterion()
+      -- AL: latent variable sampler
+      sampler = nn.Sampler()
    else -- DON'T CARE
       assert(path.exists(opt.train_from), 'checkpoint path invalid')
       print('loading ' .. opt.train_from .. '...')
@@ -713,7 +743,7 @@ function main()
       _, criterion = make_generator(valid_data, opt)
    end   
    
-   layers = {encoder, decoder, generator, recognition_model}
+   layers = {encoder, decoder, generator, recognition_model, prior_model}
 
    -- AL: Adagrad stuff
    if opt.adagrad == 1 then
