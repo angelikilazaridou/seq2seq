@@ -1,28 +1,33 @@
 local KLDCriterion, parent = torch.class('nn.KLDCriterion', 'nn.Criterion')
 
-function KLDCriterion:updateOutput(mean_phi, log_var_phi, mean_omega, log_var_omega)
+function KLDCriterion:updateOutput(inputs)
+
+    mu_phi, logsigma_phi, mu_omega, logsigma_omega = table.unpack(inputs)
     -- Appendix B from VAE paper: 0.5 * sum(1 + log(sigma^2) - mu^2 - sigma^2)
-    
-    local mean_phi_sq = torch.pow(mean_phi, 2)
-    local mean_omega_sq = torch.pow(mean_omega, 2)
+   
+    print(mu_phi:size())
+    print(logsigma_phi:size())
+    print(logsigma_omega:size())
+    local mu_phi_sq = torch.pow(mu_phi, 2)
+    local mu_omega_sq = torch.pow(mu_omega, 2)
 
     --term A
-    local KLDelements = log_var_omega:clone()
-    KLDelements:add(-1, log_var_phi)
+    local KLDelements = logsigma_omega:clone()
+    KLDelements:add(-1, logsigma_phi)
     
     --term B
     KLDelements:add(-1)
    
     --term C
-    local termC = torch.exp(log_var_phi)
-    termC:add(mean_phi_sq)
-    termC:add(mean_omega_sq)
+    local termC = torch.exp(logsigma_phi)
+    termC:add(mu_phi_sq)
+    termC:add(mu_omega_sq)
     
-    local tmp = mean_omega
-    tmp:mul(mean_phi):mul(2)
+    local tmp = mu_omega
+    tmp:cmul(mu_phi):mul(2)
 
     termC:add(tmp)
-    termC:div(torch.exp(log_var_omega))
+    termC:cdiv(torch.exp(logsigma_omega))
 
     KLDelements:add(-1, termC)
     
@@ -33,30 +38,36 @@ end
 
 
 
-function KLDCriterion:updateGradInput(mean_phi, log_var_phi, mean_omega, log_var_omega)
+function KLDCriterion:updateGradInput(inputs)
+    
+    mu_phi, logsigma_phi, mu_omega, logsigma_omega = table.unpack(inputs)
 
     self.gradInput = {}
     
-    self.gradInput[1] = mean_phi:clone() + mean_omega:clone()
-    self.gradInput[1]:div(torch.exp(log_var_omega))
+    self.gradInput[1] = mu_phi:clone() + mu_omega:clone()
+    self.gradInput[1]:cdiv(torch.exp(logsigma_omega))
     
-    self.gradInput[3] = mean_omega:clone() + mean_phi:clone()
-    self.gradInput[3]:div(torch.exp(log_var_omega))
+    self.gradInput[3] = mu_omega:clone() + mu_phi:clone()
+    self.gradInput[3]:cdiv(torch.exp(logsigma_omega))
 
-    self.gradInput[2] = 1
-    self.gradInput[2]:div(torc.exp(log_var_phi)):mul(-0.5)
-    local tmp = 1
-    tmp:div(log_var_omega)
+    local allOnes = logsigma_phi:clone():fill(1)
+
+    self.gradInput[2] = allOnes:clone()
+    self.gradInput[2]:cdiv(torch.exp(logsigma_phi)):mul(-0.5)
+
+    local tmp = allOnes:clone()
+    tmp:cdiv(logsigma_omega)
     self.gradInput[2]:add(tmp)
 
-    self.gradInput[4] = -0.5
-    self.gradInput[4]:div(torch.exp(log_var_omega))
+  
+    self.gradInput[4] = allOnes:clone():fill(-0.5)
+    self.gradInput[4]:cdiv(torch.exp(logsigma_omega))
  
-    local tmp = torch.exp(log_var_phi)
-    tmp:add(mean_phi_sq):add(mean_omega_sq)
-    local tmp2 = mean_phi:clone()
-    tmp2:mul(2):mul(mean_omega)
-    tmp:add(tmp2):div(torch.pow(torch.exp(log_var_omega),2)):mul(-1):mul(torch.exp(log_var_omega)):mul(0.5)
+    local tmp = torch.exp(logsigma_phi)
+    tmp:add(torch.pow(mu_phi,2)):add(torch.pow(mu_omega,2))
+    local tmp2 = mu_phi:clone()
+    tmp2:mul(2):cmul(mu_omega)
+    tmp:add(tmp2):cdiv(torch.pow(torch.exp(logsigma_omega),2)):mul(-1):cmul(torch.exp(logsigma_omega)):mul(0.5)
 
     self.gradInput[4]:add(tmp)
 

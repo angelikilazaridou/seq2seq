@@ -29,13 +29,10 @@ function recognition_model(x_size, y_size, z_size)
 
 
     local x = nn.JoinTable(2)({inputs[1], inputs[2]})
-    local d = nn.Linear(x_size+y_size, z_size*2)(x)
 
-    -- break batch_size x 1 x d_size*2 into batch_size x 2 x z_size
-    d =  nn.View(-1, z_size):setNumInputDims(2)(d)
     -- get mean and variance
-    m = nn.Select(2,1)(d)
-    s = nn.Select(2,2)(d)
+    local m = nn.Linear(x_size + y_size, z_size)(x)
+    local s = nn.Linear(x_size + y_size, z_size)(x)
 
     local outputs = {}
     table.insert(outputs, m)
@@ -51,13 +48,10 @@ function prior_model(x_size, z_size)
     table.insert(inputs, nn.Identity()()) -- x
 
     local x = inputs[1]
-    local d = nn.Linear(x_size, z_size*2)(x)
 
-    -- break batch_size x 1 x z_size*2 into batch_size x 2 x z_size
-    d =  nn.View(-1, z_size):setNumInputDims(2)(d)
     -- get mean and variance
-    m = nn.Select(2,1)(d)
-    s = nn.Select(2,2)(d)
+    local m = nn.Linear(x_size, z_size)(x)
+    local s = nn.Linear(x_size, z_size)(x)
     
     local outputs = {}
     table.insert(outputs, m)
@@ -107,7 +101,8 @@ function make_lstm(data, opt, model, use_chars)
        if use_chars == 0 then
 	  local word_vecs
 	  if model == 'enc' then
-	     word_vecs = nn.LookupTable(data.source_size, input_size)
+	     -- TODO: unify source and target vocab
+	     word_vecs = nn.LookupTable(data.target_size, input_size)
 	  else
 	     word_vecs = nn.LookupTable(data.target_size, input_size)
 	  end	  
