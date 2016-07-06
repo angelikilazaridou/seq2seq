@@ -61,7 +61,7 @@ function prior_model(x_size, z_size)
 
 end
 
-function make_lstm(data, opt, model, use_chars)
+function make_lstm(data, opt, model, side, use_chars)
    assert(model == 'enc' or model == 'dec')
    local name = '_' .. model
    local dropout = opt.dropout or 0
@@ -100,9 +100,8 @@ function make_lstm(data, opt, model, use_chars)
     if L == 1 then
        if use_chars == 0 then
 	  local word_vecs
-	  if model == 'enc' then
-	     -- TODO: unify source and target vocab
-	     word_vecs = nn.LookupTable(data.target_size, input_size)
+	  if model == 'enc' and side == 'source' then
+	     word_vecs = nn.LookupTable(data.source_size, input_size)
 	  else
 	     word_vecs = nn.LookupTable(data.target_size, input_size)
 	  end	  

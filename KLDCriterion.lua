@@ -5,9 +5,6 @@ function KLDCriterion:updateOutput(inputs)
     mu_phi, logsigma_phi, mu_omega, logsigma_omega = table.unpack(inputs)
     -- Appendix B from VAE paper: 0.5 * sum(1 + log(sigma^2) - mu^2 - sigma^2)
    
-    print(mu_phi:size())
-    print(logsigma_phi:size())
-    print(logsigma_omega:size())
     local mu_phi_sq = torch.pow(mu_phi, 2)
     local mu_omega_sq = torch.pow(mu_omega, 2)
 
@@ -27,10 +24,14 @@ function KLDCriterion:updateOutput(inputs)
     tmp:cmul(mu_phi):mul(2)
 
     termC:add(tmp)
-    termC:cdiv(torch.exp(logsigma_omega))
+    -- keep it for later
+    self.constant = termC:clone()
 
-    KLDelements:add(-1, termC)
+    termC:cdiv(torch.exp(logsigma_omega)):mul(-1)
+
+    KLDelements:add(termC)
     
+    -- sum over dimensions and batches
     self.output = - 0.5 * torch.sum(KLDelements)
     
     return self.output
@@ -50,27 +51,13 @@ function KLDCriterion:updateGradInput(inputs)
     self.gradInput[3] = mu_omega:clone() + mu_phi:clone()
     self.gradInput[3]:cdiv(torch.exp(logsigma_omega))
 
-    local allOnes = logsigma_phi:clone():fill(1)
-
-    self.gradInput[2] = allOnes:clone()
-    self.gradInput[2]:cdiv(torch.exp(logsigma_phi)):mul(-0.5)
-
-    local tmp = allOnes:clone()
-    tmp:cdiv(logsigma_omega)
-    self.gradInput[2]:add(tmp)
+    self.gradInput[2] = torch.exp(logsigma_phi)
+    self.gradInput[2]:cdiv(torch.exp(logsigma_omega)):add(1):mul(0.5)
 
   
-    self.gradInput[4] = allOnes:clone():fill(-0.5)
-    self.gradInput[4]:cdiv(torch.exp(logsigma_omega))
+    self.gradInput[4] = self.constant:clone()
+    self.gradInput[4]:cdiv(torch.exp(logsigma_omega)):add(1):mul(-0.5)
  
-    local tmp = torch.exp(logsigma_phi)
-    tmp:add(torch.pow(mu_phi,2)):add(torch.pow(mu_omega,2))
-    local tmp2 = mu_phi:clone()
-    tmp2:mul(2):cmul(mu_omega)
-    tmp:add(tmp2):cdiv(torch.pow(torch.exp(logsigma_omega),2)):mul(-1):cmul(torch.exp(logsigma_omega)):mul(0.5)
-
-    self.gradInput[4]:add(tmp)
-
 
     return self.gradInput
 end

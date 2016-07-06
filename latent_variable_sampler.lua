@@ -2,16 +2,26 @@ require 'nn'
 
 local Sampler, parent = torch.class('nn.Sampler', 'nn.Module')
 
-function Sampler:__init()
+function Sampler:__init(gpuid)
     parent.__init(self)
     self.gradInput = {}
+    self.on_cuda = false
+    if gpuid>0 then
+        self.on_cuda = true
+    end
 end 
 
 function Sampler:updateOutput(input)
     self.eps = self.eps or input[1].new()
-    self.eps:resizeAs(input[1]):copy(torch.randn(input[1]:size()))
-
+    if self.on_cuda == true then
+        self.eps:resizeAs(input[1]):copy(torch.randn(input[1]:size()):cuda())
+    else
+        self.eps:resizeAs(input[1]):copy(torch.randn(input[1]:size()))
+    end
+        
+    
     self.output = self.output or self.output.new()
+
     self.output:resizeAs(input[2]):copy(input[2])
     self.output:mul(0.5):exp():cmul(self.eps)
 
