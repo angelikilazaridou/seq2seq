@@ -33,9 +33,10 @@ cmd:text("**Model options**")
 cmd:text("")
 
 cmd:option('-num_layers', 2, [[Number of layers in the LSTM encoder/decoder]])
-cmd:option('-rnn_size', 500, [[Size of LSTM hidden states]])
-cmd:option('-z_size',500, [[Size of latent vector]])
-cmd:option('-word_vec_size', 500, [[Word embedding sizes]])
+cmd:option('-rnn_size', 20, [[Size of LSTM hidden states]])
+cmd:option('-z_size',20, [[Size of latent vector]])
+cmd:option('-word_vec_size', 50, [[Word embedding sizes]])
+cmd:option('-hid_rec_size', 30, [[The hidden size of the recognition model]])
 cmd:option('-use_chars_enc', 0, [[If = 1, use character on the encoder 
                                 side (instead of word embeddings]])
 cmd:option('-use_chars_dec', 0, [[If = 1, use character on the decoder 
@@ -293,13 +294,13 @@ function train(train_data, valid_data)
 
    function train_batch(data, epoch)
       local train_nonzeros = 0
-      local train_loss = 0	      
+      local train_kldloss = 0	      
       local train_lossMLE = 0
       local batch_order = torch.randperm(data.length) -- shuffle mini batch order     
       local start_time = timer:time().real
       local num_words_target = 0
       local num_words_source = 0
-      
+
       for i = 1, data:size() do
 	 zero_table(grad_params, 'zero')
 	 local d
@@ -310,7 +311,7 @@ function train(train_data, valid_data)
 	 end
          local target, target_out, nonzeros, source = d[1], d[2], d[3], d[4]
 	 local batch_l, target_l, source_l = d[5], d[6], d[7]
-	
+
 	 local encoder_grads_source = encoder_grad_proto[{{1, batch_l}, {1, source_l}}]:clone()
 	 local encoder_grads_target = encoder_grad_proto[{{1, batch_l}, {1, target_l}}]:clone()
 
@@ -350,6 +351,7 @@ function train(train_data, valid_data)
 	 local mu_phi = stats_phi[1]
 	 local logsigma_phi = stats_phi[2]
 
+         
 	 -- calculate z
 	 local z = sampler:forward({mu_phi, logsigma_phi})
 	 -- use x to predict m and s from prior model
@@ -423,9 +425,6 @@ function train(train_data, valid_data)
 	       drnn_state_dec[j-dec_offset+1]:copy(dlst[j])
 	    end	    
 	 end
-	
-	 --total loss
-	 local loss = lossMLE/target_l + kldloss
          word_vec_layers[3].gradWeight[1]:zero()
 	 if opt.fix_word_vecs_dec == 1 then
 	    word_vec_layers[3].gradWeight:zero()
@@ -481,6 +480,7 @@ function train(train_data, valid_data)
 	 end
 
 
+
 	 -- backward prop encoder target
          for t = target_l, 1, -1 do
 	    local encoder_input = {target[t], table.unpack(rnn_state_enc_target[t-1])}
@@ -531,14 +531,14 @@ function train(train_data, valid_data)
 	 num_words_target = num_words_target + batch_l*target_l
 	 num_words_source = num_words_source + batch_l*source_l
 	 train_nonzeros = train_nonzeros + nonzeros
-	 train_loss = train_loss + loss*batch_l
 	 train_lossMLE = train_lossMLE + lossMLE*batch_l
+	 train_kldloss = train_kldloss + kldloss
 	 local time_taken = timer:time().real - start_time
          if i % opt.print_every == 0 then
 	    local stats = string.format('Epoch: %d, Batch: %d/%d, Batch size: %d, LR: %.4f, ',
 					epoch, i, data:size(), batch_l, opt.learning_rate)
-	    stats = stats .. string.format('PPL: %.2f, |Param|: %.2f, |GParam|: %.2f, ',
-				  math.exp(train_lossMLE/train_nonzeros), param_norm, new_grad_norm)
+	    stats = stats .. string.format('KLDloss: %.2f, PPL: %.2f, |Param|: %.2f, |GParam|: %.2f, ',
+				  train_kldloss/i, math.exp(train_lossMLE/train_nonzeros), param_norm, new_grad_norm)
 	    stats = stats .. string.format('Training: %d/%d/%d total/source/target tokens/sec',
 					   (num_words_target+num_words_source) / time_taken,
 					   num_words_source / time_taken,
@@ -549,7 +549,7 @@ function train(train_data, valid_data)
 	    collectgarbage()
 	 end
       end
-      return train_loss, train_nonzeros
+      return train_lossMLE, train_nonzeros
    end   
 
    local total_loss, total_nonzeros, batch_loss, batch_nonzeros
@@ -725,7 +725,7 @@ function main()
       -- AL: word generator
       generator, criterion = make_generator(valid_data, opt)
       -- AL: recognition model
-      recognition_model = recognition_model(opt.rnn_size, opt.rnn_size, opt.z_size) 
+      recognition_model = recognition_model1(opt.rnn_size, opt.rnn_size, opt.z_size) 
       -- AL: prior model
       prior_model = prior_model(opt.rnn_size, opt.z_size)
       -- AL: KDloss

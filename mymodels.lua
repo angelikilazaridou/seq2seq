@@ -21,7 +21,7 @@ function compute_z()
     return nn.gModule(inputs, outputs)
 end
 
-function recognition_model(x_size, y_size, z_size)
+function recognition_model1(x_size, y_size, z_size)
  
     local inputs = {}
     table.insert(inputs, nn.Identity()()) -- x
@@ -29,7 +29,7 @@ function recognition_model(x_size, y_size, z_size)
 
 
     local x = nn.JoinTable(2)({inputs[1], inputs[2]})
-
+    
     -- get mean and variance
     local m = nn.Linear(x_size + y_size, z_size)(x)
     local s = nn.Linear(x_size + y_size, z_size)(x)
@@ -41,6 +41,51 @@ function recognition_model(x_size, y_size, z_size)
     return nn.gModule(inputs, outputs)
 
 end
+
+function recognition_model3(x_size, y_size, h_size, z_size)
+ 
+    local inputs = {}
+    table.insert(inputs, nn.Identity()()) -- x
+    table.insert(inputs, nn.Identity()()) -- y
+
+
+    local x = nn.JoinTable(2)({inputs[1], inputs[2]})
+    local h = nn.ReLU()(nn.Linear(x_size+y_size, h_size)(x))
+
+    -- get mean and variance
+    local m = nn.Linear(h_size, z_size)(h)
+    local s = nn.Linear(h_size, z_size)(h)
+
+    local outputs = {}
+    table.insert(outputs, m)
+    table.insert(outputs, s)
+
+    return nn.gModule(inputs, outputs)
+
+end
+
+
+function recognition_model2(x_size, z_size)
+ 
+    local inputs = {}
+    table.insert(inputs, nn.Identity()()) -- x
+    table.insert(inputs, nn.Identity()()) -- y
+
+
+    local x = nn.CSubTable()({inputs[1], inputs[2]})
+    
+    -- get mean and variance
+    local m = nn.Linear(x_size, z_size)(x)
+    local s = nn.Linear(x_size, z_size)(x)
+
+    local outputs = {}
+    table.insert(outputs, m)
+    table.insert(outputs, s)
+
+    return nn.gModule(inputs, outputs)
+
+end
+
 
 function prior_model(x_size, z_size)
     
@@ -67,6 +112,7 @@ function make_lstm(data, opt, model, side, use_chars)
    local dropout = opt.dropout or 0
    local n = opt.num_layers
    local rnn_size = opt.rnn_size
+   local z_size = opt.z_size
    local input_size
    if use_chars == 0 then
       input_size = opt.word_vec_size

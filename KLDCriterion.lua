@@ -21,18 +21,18 @@ function KLDCriterion:updateOutput(inputs)
     termC:add(mu_omega_sq)
     
     local tmp = mu_omega
-    tmp:cmul(mu_phi):mul(2)
+    tmp:cmul(mu_phi):mul(-2)
 
     termC:add(tmp)
     -- keep it for later
     self.constant = termC:clone()
 
-    termC:cdiv(torch.exp(logsigma_omega)):mul(-1)
+    termC:cdiv(torch.exp(logsigma_omega))
 
     KLDelements:add(termC)
     
-    -- sum over dimensions and batches
-    self.output = - 0.5 * torch.sum(KLDelements)
+    -- sum over dimensions
+    self.output =  0.5 * torch.sum(KLDelements)
     
     return self.output
 end
@@ -45,18 +45,18 @@ function KLDCriterion:updateGradInput(inputs)
 
     self.gradInput = {}
     
-    self.gradInput[1] = mu_phi:clone() + mu_omega:clone()
+    self.gradInput[1] = mu_phi:clone() - mu_omega:clone()
     self.gradInput[1]:cdiv(torch.exp(logsigma_omega))
     
-    self.gradInput[3] = mu_omega:clone() + mu_phi:clone()
+    self.gradInput[3] = mu_omega:clone() -  mu_phi:clone()
     self.gradInput[3]:cdiv(torch.exp(logsigma_omega))
 
     self.gradInput[2] = torch.exp(logsigma_phi)
-    self.gradInput[2]:cdiv(torch.exp(logsigma_omega)):add(1):mul(0.5)
+    self.gradInput[2]:cdiv(torch.exp(logsigma_omega)):add(-1):mul(0.5)
 
   
     self.gradInput[4] = self.constant:clone()
-    self.gradInput[4]:cdiv(torch.exp(logsigma_omega)):add(1):mul(-0.5)
+    self.gradInput[4]:cdiv(torch.exp(logsigma_omega)):add(-1):mul(-0.5)
  
 
     return self.gradInput
