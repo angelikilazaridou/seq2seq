@@ -361,22 +361,12 @@ function train(train_data, valid_data)
 	 
 	 -- forward prop decoder
 	 local rnn_state_dec = reset_state(init_fwd_dec, batch_l, 0)
-	 -- TODO: not sure how to deal with this
-	 if opt.init_dec == 1 then
-	    for L = 1, opt.num_layers do
-	       rnn_state_dec[0][L*2-1+opt.input_feed]:copy(rnn_state_enc_source[source_l][L*2-1])
-	       rnn_state_dec[0][L*2+opt.input_feed]:copy(rnn_state_enc_source[source_l][L*2])
-	    end
-	 end	 
-
 	
-
 	 local preds = {}
 	 local decoder_input
 	 for t = 1, target_l do
 	    decoder_clones[t]:training()
 	    local decoder_input
-	    -- this should be the z instead of context
 	    decoder_input = {target[t], z, table.unpack(rnn_state_dec[t-1])}
 	    local out = decoder_clones[t]:forward(decoder_input)
 	    local next_state = {}
@@ -389,19 +379,23 @@ function train(train_data, valid_data)
 	    end
 	    rnn_state_dec[t] = next_state
 	 end
-	 
-	 -- backward prop decoder
+	
+	 --zero grads
 	 encoder_grads_source:zero()
 	 encoder_grads_target:zero()
-
 	 dz:zero()
-	 
+
+	 -- backward prop decoder
 	 local drnn_state_dec = reset_state(init_bwd_dec, batch_l)
 	 local lossMLE = 0
 	 --KLDloss
 	 local kldloss = KLDloss:forward({mu_phi, logsigma_phi, mu_omega, logsigma_omega})/batch_l
 	 --backward through kldloss
 	 local dstats = KLDloss:backward({mu_phi, logsigma_phi, mu_omega, logsigma_omega})
+	 dstats[1]:div(batch_l)
+	 dstats[2]:div(batch_l)
+	 dstats[3]:div(batch_l)
+	 dstats[4]:div(batch_l)
         
 
 	 for t = target_l, 1, -1 do
@@ -415,7 +409,6 @@ function train(train_data, valid_data)
 	    decoder_input = {target[t], z, table.unpack(rnn_state_dec[t-1])}
 	    local dlst = decoder_clones[t]:backward(decoder_input, drnn_state_dec)
 	    -- accumulate encoder/decoder grads
-	    -- AL: why is this happening???
 	    dz:add(dlst[2])
 	    drnn_state_dec[#drnn_state_dec]:zero()
 	    if opt.input_feed == 1 then
@@ -456,14 +449,6 @@ function train(train_data, valid_data)
 	 local drnn_state_enc_source = reset_state(init_bwd_enc, batch_l)
 	 local drnn_state_enc_target = reset_state(init_bwd_enc, batch_l)
 
-	 -- TODO: not sure how to deal with this again
-	 if opt.init_dec == 1 then
-	    for L = 1, opt.num_layers do
-	       drnn_state_enc[L*2-1]:copy(drnn_state_dec[L*2-1])
-	       drnn_state_enc[L*2]:copy(drnn_state_dec[L*2])
-	    end	    
-	 end
-	
          encoder_grads_source[{{}, source_l}]:add(dencoders[1])
 	 encoder_grads_target[{{}, target_l}]:add(dencoders[2])
          
@@ -596,8 +581,6 @@ end
 
 function eval(data)
    encoder_clones_source[1]:evaluate()   
-   encoder_clones_target[1]:evaluate()
-   decoder_clones[1]:evaluate() -- just need one clone
    generator:evaluate()
    
    local nll = 0
@@ -626,12 +609,6 @@ function eval(data)
 
       local rnn_state_dec = reset_state(init_fwd_dec, batch_l)
 
-      if opt.init_dec == 1 then
-	 for L = 1, opt.num_layers do
-	    rnn_state_dec[L*2-1+opt.input_feed]:copy(rnn_state_enc[L*2-1])
-	    rnn_state_dec[L*2+opt.input_feed]:copy(rnn_state_enc[L*2])
-	 end	 
-      end
 
       
       local loss = 0

@@ -58,7 +58,6 @@ function KLDCriterion:updateGradInput(inputs)
     self.gradInput[4] = self.constant:clone()
     self.gradInput[4]:cdiv(torch.exp(logsigma_omega)):add(-1):mul(-0.5)
  
-
     return self.gradInput
 end
 
