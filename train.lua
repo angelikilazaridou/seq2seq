@@ -76,7 +76,7 @@ cmd:text("**Optimization options**")
 cmd:text("")
 
 -- optimization
-cmd:option('-epochs', 13, [[Number of training epochs]])
+cmd:option('-epochs', 1000, [[Number of training epochs]])
 cmd:option('-start_epoch', 1, [[If loading from a checkpoint, the epoch from which to start]])
 cmd:option('-param_init', 0.1, [[Parameters are initialized over uniform distribution with support
                                (-param_init, param_init)]])
@@ -584,14 +584,14 @@ function train(train_data, valid_data)
       if epoch % opt.save_every == 0 then
          print('saving checkpoint to ' .. savefile)
 	 clean_layer(generator)
-         torch.save(savefile, {{encoder, decoder, generator}, opt})
+         torch.save(savefile, {{encoder_source, encoder_target, decoder, generator, recognition_model, prior_model, sampler, KLDloss}, opt})
       end      
    end
    -- save final model
    local savefile = string.format('%s_final.t7', opt.savefile)
    clean_layer(generator)
    print('saving final model to ' .. savefile)
-   torch.save(savefile, {{encoder:double(), decoder:double(), generator:double()}, opt})
+   torch.save(savefile, {{encoder_source:double(), encoder_target:double(), decoder:double(), generator:double(), recognition_model:double(), prior_model:double(), sampler:double(), KLDloss:double()}, opt})
 end
 
 function eval(data)
@@ -725,11 +725,12 @@ function main()
       -- AL: word generator
       generator, criterion = make_generator(valid_data, opt)
       -- AL: recognition model
-      recognition_model = recognition_model1(opt.rnn_size, opt.rnn_size, opt.z_size) 
+      recognition_model = recognition_model3(opt.rnn_size, opt.rnn_size, opt.hid_rec_size, opt.z_size) 
       -- AL: prior model
       prior_model = prior_model(opt.rnn_size, opt.z_size)
       -- AL: KDloss
       KLDloss = nn.KLDCriterion()
+      KLDloss.sizeAverage = false
       -- AL: latent variable sampler
       sampler = nn.Sampler(opt.gpuid)
    else -- DON'T CARE
