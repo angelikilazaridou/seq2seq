@@ -36,7 +36,7 @@ cmd:option('-num_layers', 2, [[Number of layers in the LSTM encoder/decoder]])
 cmd:option('-rnn_size', 500, [[Size of LSTM hidden states]])
 cmd:option('-z_size',500, [[Size of latent vector]])
 cmd:option('-word_vec_size', 500, [[Word embedding sizes]])
-cmd:option('-hid_rec_size', 30, [[The hidden size of the recognition model]])
+cmd:option('-hid_rec_size', 100, [[The hidden size of the recognition model]])
 cmd:option('-use_chars_enc', 0, [[If = 1, use character on the encoder 
                                 side (instead of word embeddings]])
 cmd:option('-use_chars_dec', 0, [[If = 1, use character on the decoder 
@@ -148,18 +148,36 @@ function train(train_data, valid_data)
       if opt.train_from:len() == 0 then
 	 p:uniform(-opt.param_init, opt.param_init)
       end
+      if i==1 then
+            print(p:size())
+            print(p:norm())
+      end
+
       num_params = num_params + p:size(1)
       params[i] = p
       grad_params[i] = gp
    end
 
+   if opt.pre_word_vecs_enc:len() > 0 then   
+      local f = hdf5.open(opt.pre_word_vecs_enc)     
+      local pre_word_vecs = f:read('word_vecs'):all()
+      for i = 1, pre_word_vecs:size(1) do
+	 word_vec_layers[1].weight[i]:copy(pre_word_vecs[i])
+      end      
+   end
+   if opt.pre_word_vecs_dec:len() > 0 then      
+      local f = hdf5.open(opt.pre_word_vecs_dec)     
+      local pre_word_vecs = f:read('word_vecs'):all()
+      for i = 1, pre_word_vecs:size(1) do
+	 word_vec_layers[2].weight[i]:copy(pre_word_vecs[i])
+      end      
+   end
    
    print("Number of parameters: " .. num_params)
    
-   word_vec_layers[1].weight[1]:zero() -- word vecs for enc source for rec
-   word_vec_layers[2].weight[1]:zero() -- word vecs for enc source for prior
-   word_vec_layers[3].weight[1]:zero() -- word vecs for enc target
-   word_vec_layers[4].weight[1]:zero() -- word vecs for dec
+   word_vec_layers[1].weight[1]:zero() -- word vecs for enc source            
+   word_vec_layers[2].weight[1]:zero() -- word vecs for enc target
+   word_vec_layers[3].weight[1]:zero() -- word vecs for dec
    
    -- prototypes for gradients so there is no need to clone
    local encoder_grad_proto = torch.zeros(opt.max_batch_l, opt.max_sent_l, opt.rnn_size)
@@ -168,20 +186,13 @@ function train(train_data, valid_data)
    
    -- clone encoder/decoder up to max source/max(target, source) length   
    decoder_clones = clone_many_times(decoder, opt.max_sent_l_targ)
-   encoder_clones_source_rec = clone_many_times(encoder_source_rec, opt.max_sent_l_src)
-   encoder_clones_source_prior = clone_many_times(encoder_source_prior, opt.max_sent_l_src)
+   encoder_clones_source = clone_many_times(encoder_source, opt.max_sent_l_src)
    encoder_clones_target = clone_many_times(encoder_target, opt.max_sent_l_targ)
 
-   -- tie weights in different timesteps
+   -- tie weights in different 
    for i = 1, opt.max_sent_l_src do
-      if encoder_clones_source_rec[i].apply then
-	 encoder_clones_source_rec[i]:apply(function(m) m:setReuse() end)
-      end
-   end
-   
-   for i = 1, opt.max_sent_l_src do
-      if encoder_clones_source_prior[i].apply then
-	 encoder_clones_source_prior[i]:apply(function(m) m:setReuse() end)
+      if encoder_clones_source[i].apply then
+	 encoder_clones_source[i]:apply(function(m) m:setReuse() end)
       end
    end
 
@@ -306,44 +317,31 @@ function train(train_data, valid_data)
          local target, target_out, nonzeros, source = d[1], d[2], d[3], d[4]
 	 local batch_l, target_l, source_l = d[5], d[6], d[7]
 
-	 -- Initialize gradients for message passing
-	 local encoder_grads_source_rec = encoder_grad_proto[{{1, batch_l}, {1, source_l}}]:clone()
-	 local encoder_grads_source_prior = encoder_grad_proto[{{1, batch_l}, {1, source_l}}]:clone()
+	 local encoder_grads_source = encoder_grad_proto[{{1, batch_l}, {1, source_l}}]:clone()
 	 local encoder_grads_target = encoder_grad_proto[{{1, batch_l}, {1, target_l}}]:clone()
 
-	 local dz = sampler_proto[{{1,batch_l}, {1, opt.z_size}}]:clone()
+        
+	 local dz = sampler_proto[{{1,batch_l}, {1, opt.z_size}}]:clone() 
 	 
-	 local rnn_state_enc_source_rec = reset_state(init_fwd_enc, batch_l, 0)
-	 local rnn_state_enc_source_prior = reset_state(init_fwd_enc, batch_l, 0)
+	 local rnn_state_enc_source = reset_state(init_fwd_enc, batch_l, 0)
 	 local rnn_state_enc_target = reset_state(init_fwd_enc, batch_l, 0)
 	 
-	 local context_source_rec = context_proto[{{1, batch_l}, {1, source_l}}]:clone()
-	 local context_source_prior = context_proto[{{1, batch_l}, {1, source_l}}]:clone()
+	 local context_source = context_proto[{{1, batch_l}, {1, source_l}}]:clone()
 	 local context_target = context_proto[{{1, batch_l}, {1, target_l}}]:clone()
 
 	 if opt.gpuid >= 0 then
 	    cutorch.setDevice(opt.gpuid)
 	 end	 
-	 
-	 -- forward prop encoder source for recognition model
+
+	 -- forward prop encoder source
 	 for t = 1, source_l do
-	    encoder_clones_source_rec[t]:training()
-	    local encoder_input = {source[t], table.unpack(rnn_state_enc_source_rec[t-1])}
-	    local out = encoder_clones_source_rec[t]:forward(encoder_input)
-	    rnn_state_enc_source_rec[t] = out
-	    context_source_rec[{{},t}]:copy(out[#out])
+	    encoder_clones_source[t]:training()
+	    local encoder_input = {source[t], table.unpack(rnn_state_enc_source[t-1])}
+	    local out = encoder_clones_source[t]:forward(encoder_input)
+	    rnn_state_enc_source[t] = out
+	    context_source[{{},t}]:copy(out[#out])
 	 end
-   
-
-         -- forward prop encoder source for prior model
-         for t = 1, source_l do
-	    encoder_clones_source_prior[t]:training()
-	    local encoder_input = {source[t], table.unpack(rnn_state_enc_source_prior[t-1])}
-	    local out = encoder_clones_source_prior[t]:forward(encoder_input)
-	    rnn_state_enc_source_prior[t] = out
-	    context_source_prior[{{},t}]:copy(out[#out])
-	 end
-
+         
 	 -- forward prop encoder target
 	 for t = 1, target_l do
 	    encoder_clones_target[t]:training()
@@ -353,22 +351,25 @@ function train(train_data, valid_data)
 	    context_target[{{},t}]:copy(out[#out])
 	 end
 	
+
          -- use x and y to predict m and sigma from recognition model
-	 local stats_phi = recognition_model:forward({context_source_rec[{{},source_l}], context_target[{{},target_l}]})
+	 local stats_phi = recognition_model:forward({context_source[{{},source_l}], context_target[{{},target_l}]})
 	 local mu_phi = stats_phi[1]
 	 local logsigma_phi = stats_phi[2]
 
-         -- use x to predict m and s from prior model
-	 local stats_omega = prior_model:forward(context_source_prior[{{},source_l}])
-	 local mu_omega = stats_omega[1]
-	 local logsigma_omega = stats_omega[2]
-
+         
 	 -- calculate z (NOTE ONLY ONE SAMPLE)
 	 local z = sampler:forward({mu_phi, logsigma_phi})
-		 
+	 -- use x to predict m and s from prior model
+	 local stats_omega = prior_model:forward(context_source[{{},source_l}])
+	 local mu_omega = stats_omega[1]
+	 local logsigma_omega = stats_omega[2]
+	 
 	 -- forward prop decoder
 	 local rnn_state_dec = reset_state(init_fwd_dec, batch_l, 0)
          
+	 -- setting z to be the encoded source
+	 z = context_source[{{},source_l}]:clone()
 
 	 local preds = {}
 	 local decoder_input
@@ -388,24 +389,23 @@ function train(train_data, valid_data)
 	    rnn_state_dec[t] = next_state
 	 end
 	
-	 local lossMLE = 0
-	 --KLDloss
-	 local kldloss = KLDloss:forward({mu_phi, logsigma_phi, mu_omega, logsigma_omega})/batch_l
-	 --backward through kldloss
-	 local dstats = KLDloss:backward({mu_phi, logsigma_phi, mu_omega, logsigma_omega})
-	 dstats[1]:div(batch_l):zero()
-	 dstats[2]:div(batch_l):zero()
-	 dstats[3]:div(batch_l):zero()
-	 dstats[4]:div(batch_l):zero()
-        
 	 --zero grads
-	 encoder_grads_source_rec:zero()
-	 encoder_grads_source_prior:zero()
+	 encoder_grads_source:zero()
 	 encoder_grads_target:zero()
 	 dz:zero()
 
 	 -- backward prop decoder
 	 local drnn_state_dec = reset_state(init_bwd_dec, batch_l)
+	 local lossMLE = 0
+	 --KLDloss
+	 local kldloss = KLDloss:forward({mu_phi, logsigma_phi, mu_omega, logsigma_omega})/batch_l
+	 --backward through kldloss
+	 local dstats = KLDloss:backward({mu_phi, logsigma_phi, mu_omega, logsigma_omega})
+	 dstats[1]:div(batch_l)
+	 dstats[2]:div(batch_l)
+	 dstats[3]:div(batch_l)
+	 dstats[4]:div(batch_l)
+        
 
 	 for t = target_l, 1, -1 do
 	    local pred = generator:forward(preds[t])
@@ -414,7 +414,8 @@ function train(train_data, valid_data)
 	    dl_dpred:div(batch_l)
 	    local dl_dtarget = generator:backward(preds[t], dl_dpred)
 	    drnn_state_dec[#drnn_state_dec]:add(dl_dtarget)
-	    local decoder_input = {target[t], z, table.unpack(rnn_state_dec[t-1])}
+	    local decoder_input
+	    decoder_input = {target[t], z, table.unpack(rnn_state_dec[t-1])}
 	    local dlst = decoder_clones[t]:backward(decoder_input, drnn_state_dec)
 	    -- accumulate encoder/decoder grads
 	    dz:add(dlst[2])
@@ -426,56 +427,56 @@ function train(train_data, valid_data)
 	       drnn_state_dec[j-dec_offset+1]:copy(dlst[j])
 	    end	    
 	 end
-         word_vec_layers[4].gradWeight[1]:zero()
+         word_vec_layers[3].gradWeight[1]:zero()
+	 if opt.fix_word_vecs_dec == 1 then
+	    word_vec_layers[3].gradWeight:zero()
+	 end
 	 
 	 local grad_norm = 0
-	 grad_norm = grad_norm + grad_params[4]:norm()^2 + grad_params[5]:norm()^2
+	 grad_norm = grad_norm + grad_params[3]:norm()^2 + grad_params[4]:norm()^2
 
          local dmu_phi, dlogsigma_phi = table.unpack(sampler:backward({mu_phi, logsigma_phi}, dz))
 	 --add in dstats the ds based on the kldloss
 	 dstats[1]:add(dmu_phi)
 	 dstats[2]:add(dlogsigma_phi)
 	
+	 -- MAKING SURE THAT GRADIENTS ARE ZERO
+	 dstats[1]:div(batch_l):zero()
+	 dstats[2]:div(batch_l):zero()
+	 dstats[3]:div(batch_l):zero()
+	 dstats[4]:div(batch_l):zero()
+
          -- backward prop through recognition_model
-	 local dencoders_rec = recognition_model:backward({context_source_rec[{{},source_l}], context_target[{{},target_l}]}, {dstats[1],  dstats[2]})
+	 local dencoders = recognition_model:backward({context_source[{{},source_l}], context_target[{{},target_l}]}, {dstats[1],  dstats[2]})
 	
 	 -- backward prop thourgh prior model
-	 local dencoder_prior = prior_model:backward({context_source_prior[{{},source_l}]}, {dstats[3], dstats[4]})
+	 local dx = prior_model:backward({context_source[{{},source_l}]}, {dstats[3], dstats[4]})
+   
 
+ 	 grad_norm = grad_norm + grad_params[5]:norm()^2 + grad_params[6]:norm()^2
 
- 	 grad_norm = grad_norm + grad_params[6]:norm()^2 + grad_params[7]:norm()^2
+	 -- add gradients of inputs from prior and recognition
+	 dencoders[1]:add(dx)
 
+	 -- MAKING SURE THAT THE GRADIENTS FOE THE dx are coming from the dz
+	 dencoders[1] = dz:clone()
 
 	 -- backward prop encoders
-	 local drnn_state_enc_source_rec = reset_state(init_bwd_enc, batch_l)
-	 local drnn_state_enc_source_prior = reset_state(init_bwd_enc, batch_l)
+	 local drnn_state_enc_source = reset_state(init_bwd_enc, batch_l)
 	 local drnn_state_enc_target = reset_state(init_bwd_enc, batch_l)
 
-         encoder_grads_source_rec[{{}, source_l}]= dencoders_rec[1]:clone()
-	 encoder_grads_source_prior[{{}, source_l}] = dencoder_prior:clone()
-	 encoder_grads_target[{{}, target_l}] = dencoders_rec[2]:clone()
+         encoder_grads_source[{{}, source_l}] = dencoders[1]:clone()
+	 encoder_grads_target[{{}, target_l}] = dencoders[2]:clone()
          
-	 -- backward prop encoder source for rec
+	 -- backward prop encoder source
 	 for t = source_l, 1, -1 do
-	    local encoder_input = {source[t], table.unpack(rnn_state_enc_source_rec[t-1])}
+	    local encoder_input = {source[t], table.unpack(rnn_state_enc_source[t-1])}
 	    if t == source_l then
-	       drnn_state_enc_source_rec[#drnn_state_enc_source_rec]:add(encoder_grads_source_rec[{{},t}])
+	       drnn_state_enc_source[#drnn_state_enc_source]:add(encoder_grads_source[{{},t}])
 	    end
-	    local dlst = encoder_clones_source_rec[t]:backward(encoder_input, drnn_state_enc_source_rec)
-	    for j = 1, #drnn_state_enc_source_rec do
-	       drnn_state_enc_source_rec[j]:copy(dlst[j+1])
-	    end	    
-	 end
-         
-	 -- backward prop encoder source for rec
-	 for t = source_l, 1, -1 do
-	    local encoder_input = {source[t], table.unpack(rnn_state_enc_source_prior[t-1])}
-	    if t == source_l then
-	       drnn_state_enc_source_prior[#drnn_state_enc_source_prior]:add(encoder_grads_source_prior[{{},t}])
-	    end
-	    local dlst = encoder_clones_source_prior[t]:backward(encoder_input, drnn_state_enc_source_prior)
-	    for j = 1, #drnn_state_enc_source_prior do
-	       drnn_state_enc_source_prior[j]:copy(dlst[j+1])
+	    local dlst = encoder_clones_source[t]:backward(encoder_input, drnn_state_enc_source)
+	    for j = 1, #drnn_state_enc_source do
+	       drnn_state_enc_source[j]:copy(dlst[j+1])
 	    end	    
 	 end
 
@@ -493,11 +494,19 @@ function train(train_data, valid_data)
 	    end
 	 end
 	 
-	 word_vec_layers[3].gradWeight[1]:zero()
+	 	    	 
+	 
          word_vec_layers[2].gradWeight[1]:zero()
+	 if opt.fix_word_vecs_enc == 1 then
+	    word_vec_layers[2].gradWeight:zero()
+	 end
+	 
 	 word_vec_layers[1].gradWeight[1]:zero()
+	 if opt.fix_word_vecs_enc == 1 then
+	    word_vec_layers[1].gradWeight:zero()
+	 end
 
-	 grad_norm = grad_norm + grad_params[1]:norm()^2 + grad_params[2]:norm()^2 + grad_params[3]:norm()^2
+	 grad_norm = grad_norm + grad_params[1]:norm()^2 + grad_params[2]:norm()^2
 	 grad_norm = grad_norm^0.5	 
         
 	 local new_grad_norm = 0
@@ -576,18 +585,18 @@ function train(train_data, valid_data)
       if epoch % opt.save_every == 0 then
          print('saving checkpoint to ' .. savefile)
 	 clean_layer(generator)
-         torch.save(savefile, {{encoder_source_rec, encoder_source_prior,  encoder_target, decoder, generator, recognition_model, prior_model, sampler, KLDloss}, opt})
+         torch.save(savefile, {{encoder_source, encoder_target, decoder, generator, recognition_model, prior_model, sampler, KLDloss}, opt})
       end      
    end
    -- save final model
    local savefile = string.format('%s_final.t7', opt.savefile)
    clean_layer(generator)
    print('saving final model to ' .. savefile)
-   torch.save(savefile, {{encoder_source_rec:double(), encoder_source_prior:double(),  encoder_target:double(), decoder:double(), generator:double(), recognition_model:double(), prior_model:double(), sampler:double(), KLDloss:double()}, opt})
+   torch.save(savefile, {{encoder_source:double(), encoder_target:double(), decoder:double(), generator:double(), recognition_model:double(), prior_model:double(), sampler:double(), KLDloss:double()}, opt})
 end
 
 function eval(data)
-   encoder_clones_source_prior[1]:evaluate()   
+   encoder_clones_source[1]:evaluate()   
    generator:evaluate()
    
    local nll = 0
@@ -602,7 +611,7 @@ function eval(data)
      -- forward prop encoder source
       for t = 1, source_l do
 	 local encoder_input = {source[t], table.unpack(rnn_state_enc_source)}
-	 local out = encoder_clones_source_prior[1]:forward(encoder_input)
+	 local out = encoder_clones_source[1]:forward(encoder_input)
 	 rnn_state_enc_source = out
 	 context_source[{{},t}]:copy(out[#out])
       end	 
@@ -613,6 +622,8 @@ function eval(data)
       local logsigma_omega = stats_omega[2]
       -- calculate z
       local z = sampler:forward({mu_omega, logsigma_omega})
+      -- don't use it, use just the encoding context
+      z = context_source[{{},source_l}]
 
       local rnn_state_dec = reset_state(init_fwd_dec, batch_l)
 
@@ -702,8 +713,7 @@ function main()
    -- Build model
    if opt.train_from:len() == 0 then
       -- AL: ENCODER
-      encoder_source_rec = make_lstm(valid_data, opt, 'enc', 'source', opt.use_chars_enc)
-      encoder_source_prior = make_lstm(valid_data, opt, 'enc', 'source', opt.use_chars_enc)
+      encoder_source = make_lstm(valid_data, opt, 'enc', 'source', opt.use_chars_enc)
       encoder_target = make_lstm(valid_data, opt, 'enc', 'target', opt.use_chars_enc)
       -- AL: DECODER
       decoder = make_lstm(valid_data, opt, 'dec', '', opt.use_chars_dec)
@@ -734,7 +744,7 @@ function main()
       _, criterion = make_generator(valid_data, opt)
    end   
    
-   layers = {encoder_source_rec, encoder_source_prior,  encoder_target, decoder, generator, recognition_model, prior_model}
+   layers = {encoder_source, encoder_target, decoder, generator, recognition_model, prior_model}
 
    -- AL: Adagrad stuff
    if opt.adagrad == 1 then
@@ -758,8 +768,8 @@ function main()
 
    -- these layers will be manipulated during training
    word_vec_layers = {}
-   encoder_source_rec:apply(get_layer)   
-   encoder_source_prior:apply(get_layer)
+   -- AL: WHAT??
+   encoder_source:apply(get_layer)   
    encoder_target:apply(get_layer)
    decoder:apply(get_layer)
    train(train_data, valid_data)

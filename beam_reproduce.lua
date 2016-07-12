@@ -152,7 +152,7 @@ function generate_beam(model, initial, K, max_sent_l, source, gold)
    
    for t = 1, source_l do
       local encoder_input = {source_input[t], table.unpack(rnn_state_enc)}
-      local out = model[2]:forward(encoder_input)
+      local out = model[1]:forward(encoder_input)
       rnn_state_enc = out
       context[{{},t}]:copy(out[#out])
    end
@@ -161,24 +161,8 @@ function generate_beam(model, initial, K, max_sent_l, source, gold)
       table.insert(rnn_state_dec, init_fwd_dec[i]:zero())
    end
 
-   --use x to predict m and s from prior model
-   local stats_omega = model[7]:forward(context[{{},source_l}])
-   local mu_omega = stats_omega[1]
-   -- calculate z
-   z = mu_omega 
-   
-   if model_opt.init_dec == 1 then
-      for L = 1, model_opt.num_layers do
-	 rnn_state_dec[L*2-1+model_opt.input_feed]:copy(
-	    rnn_state_enc[L*2-1]:expand(K, model_opt.rnn_size))
-	 rnn_state_dec[L*2+model_opt.input_feed]:copy(
-	    rnn_state_enc[L*2]:expand(K, model_opt.rnn_size))
-      end
-   end
-
    out_float = torch.FloatTensor()
-   --z = context:expand(K, source_l, model_opt.rnn_size)
-   z = z:expand(K,model_opt.z_size)
+   context = context:expand(K, source_l, model_opt.rnn_size)
 
    local i = 1
    local done = false
@@ -199,9 +183,9 @@ function generate_beam(model, initial, K, max_sent_l, source, gold)
       end
      
       local decoder_input
-      decoder_input = {decoder_input1, z, table.unpack(rnn_state_dec)}
-      local out_decoder = model[4]:forward(decoder_input)
-      local out = model[5]:forward(out_decoder[#out_decoder]) -- K x vocab_size
+      decoder_input = {decoder_input1, context[{{}, source_l}] , table.unpack(rnn_state_dec)}
+      local out_decoder = model[3]:forward(decoder_input)
+      local out = model[4]:forward(out_decoder[#out_decoder]) -- K x vocab_size
       
       rnn_state_dec = {} -- to be modified later
       if model_opt.input_feed == 1 then
@@ -295,9 +279,9 @@ function generate_beam(model, initial, K, max_sent_l, source, gold)
 	    decoder_input1 = gold[{{t-1}}]
 	 end
 	 local decoder_input
-	 decoder_input = {decoder_input1, z[{{1,1},{}}], table.unpack(rnn_state_dec)}
-	 local out_decoder = model[4]:forward(decoder_input)
-	 local out = model[5]:forward(out_decoder[#out_decoder]) -- K x vocab_size
+	 decoder_input = {decoder_input1, context[{{1}, source_l}], table.unpack(rnn_state_dec)}
+	 local out_decoder = model[3]:forward(decoder_input)
+	 local out = model[4]:forward(out_decoder[#out_decoder]) -- K x vocab_size
 	 rnn_state_dec = {} -- to be modified later
 	 if model_opt.input_feed == 1 then
 	    table.insert(rnn_state_dec, out_decoder[#out_decoder])

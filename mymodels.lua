@@ -9,17 +9,6 @@ function nn.Module:setReuse()
    end
 end
 
-function compute_z()
-    local inputs = {}
-    table.insert(inputs, nn.Identity()()) -- mu
-    table.insert(inputs, nn.Identity()()) -- sigma
-    table.insert(inputs, nn.Identity()()) -- epsilon
-
-    local outputs = {}
-    table.insert(outputs, nn.CAddTable()({inputs[1], nn.CMulTable()({inputs[2],inputs[3]})}))
-
-    return nn.gModule(inputs, outputs)
-end
 
 function recognition_model1(x_size, y_size, z_size)
  
@@ -31,8 +20,8 @@ function recognition_model1(x_size, y_size, z_size)
     local x = nn.JoinTable(2)({inputs[1], inputs[2]})
     
     -- get mean and variance
-    local m = nn.Linear(x_size + y_size, z_size)(x)
-    local s = nn.Linear(x_size + y_size, z_size)(x)
+    local m = nn.LinearNoBias(x_size + y_size, z_size)(x)
+    local s = nn.LinearNoBias(x_size + y_size, z_size)(x)
 
     local outputs = {}
     table.insert(outputs, m)
@@ -41,29 +30,6 @@ function recognition_model1(x_size, y_size, z_size)
     return nn.gModule(inputs, outputs)
 
 end
-
-function recognition_model3(x_size, y_size, h_size, z_size)
- 
-    local inputs = {}
-    table.insert(inputs, nn.Identity()()) -- x
-    table.insert(inputs, nn.Identity()()) -- y
-
-
-    local x = nn.JoinTable(2)({inputs[1], inputs[2]})
-    local h = nn.ReLU()(nn.Linear(x_size+y_size, h_size)(x))
-
-    -- get mean and variance
-    local m = nn.Linear(h_size, z_size)(h)
-    local s = nn.Linear(h_size, z_size)(h)
-
-    local outputs = {}
-    table.insert(outputs, m)
-    table.insert(outputs, s)
-
-    return nn.gModule(inputs, outputs)
-
-end
-
 
 function recognition_model2(x_size, z_size)
  
@@ -95,8 +61,8 @@ function prior_model(x_size, z_size)
     local x = inputs[1]
 
     -- get mean and variance
-    local m = nn.Linear(x_size, z_size)(x)
-    local s = nn.Linear(x_size, z_size)(x)
+    local m = nn.LinearNoBias(x_size, z_size)(x)
+    local s = nn.LinearNoBias(x_size, z_size)(x)
     
     local outputs = {}
     table.insert(outputs, m)
@@ -105,6 +71,7 @@ function prior_model(x_size, z_size)
     return nn.gModule(inputs, outputs)
 
 end
+
 
 function make_lstm(data, opt, model, side, use_chars)
    assert(model == 'enc' or model == 'dec')
